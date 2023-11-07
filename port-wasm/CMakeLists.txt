@@ -3,11 +3,15 @@ cmake_minimum_required(VERSION 3.5)
 project(gba)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+set(USE_FLAGS "-sUSE_SDL=2")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${USE_FLAGS}")
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${USE_FLAGS}")
+set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} ${USE_FLAGS}")
 
 add_definitions(-DUSE_KEYBOARD -DFRONTEND_SUPPORTS_RGB565 -DHAVE_STDINT_H -DINLINE=inline -DLSB_FIRST -DUSE_STATIC_WRAM -DUSE_CHEATS=1)
 
 add_executable(44gba
-"main.cpp" 
+"main.cpp"
 "../src/gba.cpp"
 "../src/memory.cpp"
 "../src/sound.cpp"

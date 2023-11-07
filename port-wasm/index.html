@@ -1,17 +1,206 @@
-<!doctype html>
-<html lang="en">
-
-<head>
+<!DOCTYPE html>
+<html lang="en" class=" dntutnjzv idc0_349 wxbnqec"><head>
+<meta http-equiv="content-type" content="text/html; charset=UTF-8">
     <!-- Required meta tags -->
     <meta charset="utf-8">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black">
-    <meta name="viewport"
-        content="user-scalable=no, initial-scale=1, maximum-scale=1, minimum-scale=1, width=device-width, height=device-height">
+    <meta name="viewport" content="user-scalable=no, initial-scale=1, maximum-scale=1, minimum-scale=1, width=device-width, height=device-height">
     <link rel="apple-touch-icon" href="icon.png">
-    <title>44GBA</title>
+    <link rel="manifest" href="manifest.json">
+    <link rel="shortcut icon" href="favicon.ico">
+    <title>44vba (turbo bind fork)</title>
 
-</head>
+<script>/******/ (() => { // webpackBootstrap
+/******/ 	"use strict";
+var __webpack_exports__ = {};
+
+;// CONCATENATED MODULE: ../core/dist/flash-identifiers.js
+const FLASH_MIMETYPE = "application/x-shockwave-flash";
+const FUTURESPLASH_MIMETYPE = "application/futuresplash";
+const FLASH7_AND_8_MIMETYPE = "application/x-shockwave-flash2-preview";
+const FLASH_MOVIE_MIMETYPE = "application/vnd.adobe.flash.movie";
+const FLASH_ACTIVEX_CLASSID = "clsid:D27CDB6E-AE6D-11cf-96B8-444553540000";
+
+;// CONCATENATED MODULE: ../core/dist/plugin-polyfill.js
+
+/**
+ * Replacement object for `MimeTypeArray` that lets us install new fake mime
+ * types.
+ *
+ * Unlike plugins we can at least enumerate mime types in Firefox, so we don't
+ * lose data.
+ *
+ * We also expose a method called `install` which adds a new plugin. This is
+ * used to falsify Flash detection. If the existing `navigator.mimeTypes` has an
+ * `install` method, you should not use `RuffleMimeTypeArray` as some other
+ * plugin emulator is already present.
+ */
+class RuffleMimeTypeArray {
+    constructor(mimeTypes) {
+        this.__mimeTypes = [];
+        this.__namedMimeTypes = {};
+        if (mimeTypes) {
+            for (let i = 0; i < mimeTypes.length; i++) {
+                this.install(mimeTypes[i]);
+            }
+        }
+    }
+    /**
+     * Install a MIME Type into the array.
+     *
+     * @param mimeType The mime type to install
+     */
+    install(mimeType) {
+        const index = this.__mimeTypes.length;
+        this.__mimeTypes.push(mimeType);
+        this.__namedMimeTypes[mimeType.type] = mimeType;
+        this[mimeType.type] = mimeType;
+        this[index] = mimeType;
+    }
+    item(index) {
+        // This behavior is done to emulate a 32-bit uint,
+        // which browsers use.
+        return this.__mimeTypes[index >>> 0];
+    }
+    namedItem(name) {
+        return this.__namedMimeTypes[name];
+    }
+    get length() {
+        return this.__mimeTypes.length;
+    }
+    [Symbol.iterator]() {
+        return this.__mimeTypes[Symbol.iterator]();
+    }
+}
+/**
+ * Equivalent object to `Plugin` that allows us to falsify plugins.
+ */
+class RufflePlugin extends RuffleMimeTypeArray {
+    constructor(name, description, filename) {
+        super();
+        this.name = name;
+        this.description = description;
+        this.filename = filename;
+    }
+}
+/**
+ * Replacement object for `PluginArray` that lets us install new fake plugins.
+ *
+ * This object needs to wrap the native plugin array, since the user might have
+ * actual plugins installed. Firefox doesn't let us enumerate the array, though,
+ * which has some consequences. Namely, we can't actually perfectly wrap the
+ * native plugin array, at least unless there's some secret "unresolved object
+ * property name handler" that I've never known before in JS...
+ *
+ * We can still wrap `namedItem` perfectly at least.
+ *
+ * We also expose a method called `install` which adds a new plugin. This is
+ * used to falsify Flash detection. If the existing `navigator.plugins` has an
+ * `install` method, you should not use `RufflePluginArray` as some other plugin
+ * emulator is already present.
+ */
+class RufflePluginArray {
+    constructor(plugins) {
+        this.__plugins = [];
+        this.__namedPlugins = {};
+        for (let i = 0; i < plugins.length; i++) {
+            this.install(plugins[i]);
+        }
+    }
+    install(plugin) {
+        const index = this.__plugins.length;
+        this.__plugins.push(plugin);
+        this.__namedPlugins[plugin.name] = plugin;
+        this[plugin.name] = plugin;
+        this[index] = plugin;
+    }
+    item(index) {
+        // This behavior is done to emulate a 32-bit uint,
+        // which browsers use. Cloudflare's anti-bot
+        // checks rely on this.
+        return this.__plugins[index >>> 0];
+    }
+    namedItem(name) {
+        return this.__namedPlugins[name];
+    }
+    refresh() {
+        // Nothing to do, we just need to define the method.
+    }
+    [Symbol.iterator]() {
+        return this.__plugins[Symbol.iterator]();
+    }
+    get length() {
+        return this.__plugins.length;
+    }
+}
+/**
+ * A fake plugin designed to trigger Flash detection scripts.
+ */
+const FLASH_PLUGIN = new RufflePlugin("Shockwave Flash", "Shockwave Flash 32.0 r0", "ruffle.js");
+FLASH_PLUGIN.install({
+    type: FUTURESPLASH_MIMETYPE,
+    description: "Shockwave Flash",
+    suffixes: "spl",
+    enabledPlugin: FLASH_PLUGIN,
+});
+FLASH_PLUGIN.install({
+    type: FLASH_MIMETYPE,
+    description: "Shockwave Flash",
+    suffixes: "swf",
+    enabledPlugin: FLASH_PLUGIN,
+});
+FLASH_PLUGIN.install({
+    type: FLASH7_AND_8_MIMETYPE,
+    description: "Shockwave Flash",
+    suffixes: "swf",
+    enabledPlugin: FLASH_PLUGIN,
+});
+FLASH_PLUGIN.install({
+    type: FLASH_MOVIE_MIMETYPE,
+    description: "Shockwave Flash",
+    suffixes: "swf",
+    enabledPlugin: FLASH_PLUGIN,
+});
+/**
+ * Install a fake plugin such that detectors will see it in `navigator.plugins`.
+ *
+ * This function takes care to check if the existing implementation of
+ * `navigator.plugins` already accepts fake plugin entries. If so, it will use
+ * that version of the plugin array. This allows the plugin polyfill to compose
+ * across multiple plugin emulators with the first emulator's polyfill winning.
+ *
+ * @param plugin The plugin to install
+ */
+function installPlugin(plugin) {
+    if (!("install" in navigator.plugins) || !navigator.plugins["install"]) {
+        Object.defineProperty(navigator, "plugins", {
+            value: new RufflePluginArray(navigator.plugins),
+            writable: false,
+        });
+    }
+    const plugins = navigator.plugins;
+    plugins.install(plugin);
+    if (plugin.length > 0 &&
+        (!("install" in navigator.mimeTypes) || !navigator.mimeTypes["install"])) {
+        Object.defineProperty(navigator, "mimeTypes", {
+            value: new RuffleMimeTypeArray(navigator.mimeTypes),
+            writable: false,
+        });
+    }
+    const mimeTypes = navigator.mimeTypes;
+    for (let i = 0; i < plugin.length; i += 1) {
+        mimeTypes.install(plugin[i]);
+    }
+}
+
+;// CONCATENATED MODULE: ./src/plugin-polyfill.ts
+// This file is compiled and then injected into content.ts's compiled form.
+
+installPlugin(FLASH_PLUGIN);
+
+/******/ })()
+;</script><script charset="utf-8" src="ruffle.js"></script></head>
 
 <body>
     <style>
@@ -112,72 +301,101 @@
             background: rgba(0, 0, 0, 0.5);
             z-index: 2;
         }
+
+        textarea {
+            background: transparent;
+            color: #fff;
+            border: 2px solid white;
+
+        }
+
+        /* textarea placeholder */
+        textarea::placeholder {
+            color: #666;
+        }
     </style>
-    <div id="pause-menu" class="menu" style="background: rgba(32,43,56,0.7);" hidden>
+    <div id="pause-menu" class="menu" style="background: rgba(32,43,56,0.7);" hidden="">
         <button onclick="setPauseMenu(false)"> ← Back </button>
         <hr>
         Savegame management:<br>
         <button onclick="savBackupBtn()">Backup</button>
-        <input type="file" id="sav-file" onchange="savRestoreBtn()" hidden>
+        <input type="file" id="sav-file" onchange="savRestoreBtn()" hidden="">
         <button onclick="$id('sav-file').click()">Restore</button>
         <hr>
-        <label for="cfg-scale-mode">Screen filter(restart required):</label>
+        <label for="cfg-scale-mode">Screen filter:</label>
         <select id="cfg-scale-mode">
-            <option value="0">Pixelated</option>
+            <option value="0" selected="selected">Pixelated</option>
             <option value="1">Smooth</option>
             <option value="2">XBRZ</option>
         </select><br>
-        <textarea id="txt-code" style="width:100%" rows="10"></textarea>
+        <input type="checkbox" id="cfg-mute">
+        <label for="cfg-mute">Mute Sound</label><br>
+        <input type="checkbox" id="cfg-turbo">
+        <label for="cfg-turbo">Turbo mode</label><br>
+        <div id="div-cht">
+            Cheat Codes(backup your savegame before using it):<br>
+            <textarea id="txt-code" style="width:100%" rows="10" placeholder="Cheat code:
+GamesharkAdv: XXXXXXXX YYYYYYYY
+CodeBreaker: XXXXXXXX YYYY" tc-textcontent="true" data-tc-id="0.8712130331147837"></textarea><br>
+            <button onclick="chtSaveBtn()">Save Cheat Codes</button>
+        </div>
+        <hr>
+        Cloud Save:<span id="span-cloud-id"></span><br>
+        <button onclick="dpOnConnectButtonClicked()" id="btn-dp-connect">Connect Dropbox</button><br>
+        <button onclick="dpManualBtn(true)">↑ Upload</button>|<button onclick="dpManualBtn(false)">↓ Download</button><br>
     </div>
     <div id="welcome" class="menu">
-        <h1>44GBA</h1>
+        <h1 id="title">44vba (turbo bind fork)</h1>
         <hr>
-        <div id="wasm-loading">
+        <div id="wasm-loading" hidden="">
             Loading, please wait...
         </div>
-        <div id="select-rom" hidden>
-            <input type="file" id="romFile" onchange="onFileSelected()" hidden /></p>
+        <div id="select-rom">
+            <input type="file" id="romFile" onchange="onFileSelected()" hidden=""><p></p>
             <button onclick="$id('romFile').click()" id="btn-choose">Choose File...</button>
         </div>
         <hr>
-        Ver. 20220723 | <a href="https://github.com/44670/44gba">GitHub</a>
+        Ver. 20231106 | This is a fork with source <a href="https://github.com/AlexFolland/44vba">here</a>. <a href="https://github.com/44670/44vba">upstream GitHub (warning: old code)</a> | <a href="https://gba.44670.org">newer live instance</a>
         <p>
+            Your files are processed locally and won't be uploaded to any server.<br>
             This software should not be used to play games you have not legally obtained.<br>
-            "GBA" is a trademark of Nintendo Co.,Ltd, This site is not associated with Nintendo in any way.
+            "GBA", "Game Boy Advance" are trademarks of Nintendo Co.,Ltd, This site is not associated with Nintendo in
+            any way.
         </p>
-        <div id="ios-hint" hidden>
-            Due to iOS limitations, please open this site(https://gba.44670.org) in <b>Safari</b>, and add it to your
+        <div id="ios-hint" hidden="">
+            Due to iOS limitations, please open this site in <b>Safari</b>, and add it to your
             <b>Home Screen</b> by <b>Share Menu</b> to continue.
             <p style="text-align: center;">⬇⬇⬇</p>
         </div>
     </div>
-    <div id="msg-layer" hidden>
-        <p id="msg-text"></p>
+    <div id="msg-layer" hidden="">
+        <p id="msg-text">Gamepad disconnected.</p>
     </div>
-    <div id="vk-layer" hidden>
-        <div class="vk-rect vk" data-k="menu">Menu</div>
-        <div class="vk-rect vk" data-k="turbo">Turbo</div>
-        <div class="vk-rect vk" data-k="l">L</div>
-        <div class="vk-rect vk" data-k="r">R</div>
-        <div class="vk-round vk" data-k="a">A</div>
-        <div class="vk-round vk" data-k="b">B</div>
-        <div class="vk-rect vk" data-k="select">Select</div>
-        <div class="vk-rect vk" data-k="start">Start</div>
-        <div class=" vk" data-k="left">←</div>
-        <div class=" vk" data-k="right">→</div>
-        <div class=" vk" data-k="up">↑</div>
-        <div class=" vk" data-k="down">↓</div>
-        <div class=" vk vk-hide" style="background-color: transparent !important" data-k="ul"></div>
-        <div class=" vk vk-hide" style="background-color: transparent !important" data-k="ur"></div>
-        <div class=" vk vk-hide" style="background-color: transparent !important" data-k="dl"></div>
-        <div class=" vk vk-hide" style="background-color: transparent !important" data-k="dr"></div>
+    <div id="vk-layer" hidden="">
+        <div class="vk-rect vk" data-k="menu" style="top: 25px; left: 1650px; width: 150px; height: 25px; font-size: 35px; line-height: 25px;">Menu</div>
+        <div class="vk-rect vk" data-k="turbo" style="top: 25px; left: 0px; width: 150px; height: 25px; font-size: 35px; line-height: 25px;">F.F.</div>
+        <div class="vk-rect vk" data-k="l" style="top: 75px; left: 0px; width: 150px; height: 50px; font-size: 35px; line-height: 50px;">L</div>
+        <div class="vk-rect vk" data-k="r" style="top: 75px; left: 1650px; width: 150px; height: 50px; font-size: 35px; line-height: 50px;">R</div>
+        <div class="vk-round vk" data-k="a" style="top: 175px; left: 1735px; width: 65px; height: 65px; font-size: 35px; line-height: 65px;">A</div>
+        <div class="vk-round vk" data-k="b" style="top: 200px; left: 1644px; width: 65px; height: 65px; font-size: 35px; line-height: 65px;">B</div>
+        <div class="vk-rect vk" data-k="select" style="top: 1105px; left: 735px; width: 150px; height: 25px; font-size: 35px; line-height: 25px;">Select</div>
+        <div class="vk-rect vk" data-k="start" style="top: 1105px; left: 915px; width: 150px; height: 25px; font-size: 35px; line-height: 25px;">Start</div>
+        <div class=" vk" data-k="left" style="top: 200px; left: 0px; width: 50px; height: 50px; font-size: 35px; line-height: 50px;">←</div>
+        <div class=" vk" data-k="right" style="top: 200px; left: 100px; width: 50px; height: 50px; font-size: 35px; line-height: 50px;">→</div>
+        <div class=" vk" data-k="up" style="top: 150px; left: 50px; width: 50px; height: 50px; font-size: 35px; line-height: 50px;">↑</div>
+        <div class=" vk" data-k="down" style="top: 250px; left: 50px; width: 50px; height: 50px; font-size: 35px; line-height: 50px;">↓</div>
+        <div class=" vk vk-hide" style="top: 150px; left: 0px; width: 50px; height: 50px; font-size: 35px; line-height: 50px;" data-k="ul"></div>
+        <div class=" vk vk-hide" style="top: 150px; left: 100px; width: 50px; height: 50px; font-size: 35px; line-height: 50px;" data-k="ur"></div>
+        <div class=" vk vk-hide" style="top: 250px; left: 0px; width: 50px; height: 50px; font-size: 35px; line-height: 50px;" data-k="dl"></div>
+        <div class=" vk vk-hide" style="top: 250px; left: 100px; width: 50px; height: 50px; font-size: 35px; line-height: 50px;" data-k="dr"></div>
     </div>
-    <canvas width="240" height="160" id="gba-canvas" style=""></canvas>
+    <canvas width="240" height="160" id="gba-canvas" style="width: 1665px; height: 1110px; left: 67.5px; image-rendering: pixelated;"></canvas>
+    <script src="pako.min.js"></script>
     <script src="localforage.js"></script>
     <script src="app.js"></script>
-    <script src="build/44gba.js"></script>
-    
+    <script src="44gba.js"></script>
 
-</body>
 
-</html>
+
+
+</body></html>

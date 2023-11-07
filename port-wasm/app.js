@@ -6,27 +6,61 @@ if (!window.WebAssembly) {
     alert('Sorry, your browser does not support WebAssembly. :(')
 }
 
-
 var isIOS = !!navigator.platform && /iPad|iPhone|iPod/.test(navigator.platform);
+var isMacOS = !!navigator.platform && /Mac/.test(navigator.platform);
+if (isMacOS) {
+    if (navigator.maxTouchPoints > 2) {
+        // Nah, it is an iPad pretending to be a Mac
+        isIOS = true
+        isMacOS = false
+    }
+}
 var isWebApp = navigator.standalone || false
+
 var isSaveSupported = true
 if (isIOS) {
     //document.getElementById('romFile').files = null;
     if (!isWebApp) {
-        // On iOS Safari, the indexedDB will be cleared after 7 days. 
+        // On iOS Safari, the indexedDB will be cleared after 7 days.
         // To prevent users from frustration, we don't allow savegaming on iOS unless the we are in the PWA mode.
         isSaveSupported = false
-        alert('Due to limitations of iOS, please add this page to the home screen and launch it from the home screen icon to enable features including savegame and full screen.')
         var divIosHint = document.getElementById('ios-hint')
         divIosHint.hidden = false
         divIosHint.style = 'position: absolute; bottom: ' + divIosHint.clientHeight + 'px;'
+        $id('btn-choose').hidden = true
     }
+}
+
+var muteMode = false
+
+var config = {
+    scaleMode: 0
+}
+
+
+function loadConfig() {
+    var cfg = JSON.parse(window.localStorage['gba-config'] || '{}')
+    for (var k in cfg) {
+        config[k] = cfg[k]
+    }
+    $id('cfg-scale-mode').value = config.scaleMode
+}
+loadConfig()
+
+
+function uiSaveConfig() {
+    var newScaleMode = parseInt($id('cfg-scale-mode').value) || 0
+    if (config.scaleMode != newScaleMode) {
+        config.scaleMode = newScaleMode
+        initVideo()
+    }
+    window.localStorage['gba-config'] = JSON.stringify(config)
 }
 
 
 var keyState = {
 };
-const keyList = ["a", "b", "select", "start", "right", "left", 'up', 'down', 'r', 'l'];
+const keyList = ['a', 'b', 'select', 'start', 'right', 'left', 'up', 'down', 'r', 'l'];
 
 const AUDIO_BLOCK_SIZE = 1024
 const AUDIO_FIFO_MAXLEN = 4900
@@ -38,10 +72,11 @@ var audioFifoHead = 0
 var audioFifoCnt = 0
 
 var fileInput = document.getElementById('romFile')
-var canvas = document.getElementById('gba-canvas')
-var drawContext = canvas.getContext('2d')
+var canvas = null
+var drawContext
 var romBuffer = -1
 var idata
+var imgFrameBuffer
 var isRunning = false
 var isWasmReady = false
 var wasmAudioBuf
@@ -62,12 +97,12 @@ var romFileName
 
 var turboMode = false
 var turboInterval = -1
+var fastForwardMode = false
 
 var gbaWidth
 var gbaHeight
+
 var cheatCode
-
-
 
 
 function processAudio(event) {
@@ -75,7 +110,7 @@ function processAudio(event) {
     var audioData0 = outputBuffer.getChannelData(0)
     var audioData1 = outputBuffer.getChannelData(1)
 
-    if ((!isRunning) || (turboMode)) {
+    if ((!isRunning) || (fastForwardMode) || (muteMode)) {
         for (var i = 0; i < AUDIO_BLOCK_SIZE; i++) {
             audioData0[i] = 0
             audioData1[i] = 0
@@ -123,10 +158,10 @@ function tryInitSound() {
 
 
 function writeAudio(ptr, frames) {
-    //console.log(ptr, frames)
-    if (turboMode) {
+    if (fastForwardMode) {
         return
     }
+    //console.log(ptr, frames)
     if (!wasmAudioBuf) {
         wasmAudioBuf = new Int16Array(Module.HEAPU8.buffer).subarray(ptr / 2, ptr / 2 + 2048)
     }
@@ -148,11 +183,31 @@ function wasmReady() {
     var ptr = Module._emuGetSymbol(2)
     wasmSaveBuf = Module.HEAPU8.subarray(ptr, ptr + wasmSaveBufLen)
     ptr = Module._emuGetSymbol(3)
-    idata = new ImageData(new Uint8ClampedArray(Module.HEAPU8.buffer).subarray(ptr, ptr + 240 * 160 * 4), 240, 160)
+    imgFrameBuffer = new Uint8ClampedArray(Module.HEAPU8.buffer).subarray(ptr, ptr + 240 * 160 * 4)
+    idata = new ImageData(imgFrameBuffer, 240, 160)
 
     isWasmReady = true
     document.getElementById('wasm-loading').hidden = true
     document.getElementById('select-rom').hidden = false
+
+}
+
+function initVideo() {
+    console.log('init video')
+    if (canvas) {
+        var newCanvas = document.createElement('canvas')
+        newCanvas.id = 'gba-canvas'
+        canvas.replaceWith(newCanvas)
+        canvas = newCanvas
+    } else {
+        canvas = document.getElementById('gba-canvas')
+    }
+    if (config.scaleMode >= 2) {
+        gpuInit()
+    } else {
+        drawContext = canvas.getContext('2d')
+    }
+    adjustSize()
 }
 
 function loadSaveGame(index, cb) {
@@ -186,40 +241,51 @@ function savBackupBtn() {
     link.click();
 }
 
+function toyEncrypt(src) {
+    var dst = new Uint8Array(src.length)
+    for (var i = 0; i < src.length; i++) {
+        dst[i] = src[i] ^ 0xFB
+    }
+    return dst
+}
+
+
+async function emuBackupCloudSav() {
+    var sav = await localforage.getItem('gba-' + gameID + '-save-' + 0)
+    if (!sav) {
+        return false;
+    }
+    return toyEncrypt(pako.gzip(sav))
+}
+
+async function emuRestoreCloudSav(u8Arr) {
+    var sav = pako.ungzip(toyEncrypt(u8Arr))
+    await localforage.setItem('gba-' + gameID + '-save-' + 0, sav)
+    return true
+}
+
+
 function savRestoreBtn() {
     var file = document.getElementById('sav-file').files[0]
     if (file) {
         var fileReader = new FileReader()
+        var fileExt = file.name.split('.').pop().toLowerCase()
+        if (!((fileExt == '4gs') || (fileExt == '4gz') || (fileExt == '44gbasav') || (fileExt == 'sav') || (fileExt == 'srm'))) {
+            alert('Invalid save file')
+            return
+        }
         fileReader.onload = function (event) {
             var arrayBuffer = event.target.result
             var u8 = new Uint8Array(arrayBuffer)
+            if (fileExt == '4gz') {
+                u8 = pako.ungzip(toyEncrypt(u8))
+            }
             wasmSaveBuf.set(u8)
             alert('sav file loaded')
             Module._emuResetCpu()
             clearSaveBufState()
         };
         fileReader.readAsArrayBuffer(file)
-    }
-}
-
-function applyCheatCode() {
-    var ptrGBuf = Module._emuGetSymbol(4)
-    var gbuf = Module.HEAPU8.subarray(ptrGBuf, ptrGBuf + 0x1000)
-    var lines = cheatCode.split('\n')
-    var textEnc = new TextEncoder()
-    for (var i = 0; i < lines.length; i++) {
-        var line = lines[i].trim()
-        if (line.length == 0) {
-            continue
-        }
-        if (line.length == 12) {
-            line = line.substr(0, 8) + ' ' + line.substr(8, 4)
-        }
-        var lineBuf = textEnc.encode(line)
-        console.log(lineBuf.length)
-        gbuf.set(lineBuf)
-        gbuf[lineBuf.length] = 0
-        console.log(Module._emuAddCheat(ptrGBuf))
     }
 }
 
@@ -242,17 +308,23 @@ function loadRomArrayBuffer(arrayBuffer) {
     }
     console.log('gameID', gameID)
     Module.HEAPU8.set(u8, romBuffer)
-    cheatCode = localStorage['cht-' + gameID] 
-    if (cheatCode) {
-        $id('txt-code').value = cheatCode
-    }     
     var ret = Module._emuLoadROM(u8.length)
     document.getElementById('welcome').hidden = true
     loadSaveGame(0, function () {
         Module._emuResetCpu()
-        applyCheatCode()
-        alert('cheat code loaded')
+        cheatCode = localStorage['cht-' + gameID]
+        if (cheatCode) {
+            $id('txt-code').value = cheatCode
+            applyCheatCode()
+            alert('cheat code applied')
+        }
         isRunning = true
+        dpTryAutoBackup().then(function (ret) {
+            if (ret) {
+                showMsg('Cloud backup done.')
+            }
+        })
+        dpGameLoaded()
     })
 
 }
@@ -324,8 +396,14 @@ function emuRunFrame() {
 
         }
         lastFrameTime = performance.now()
-        Module._emuRunFrame(getVKState());
-        drawContext.putImageData(idata, 0, 0);
+        for (var i = 0; i < (fastForwardMode ? 5 : (turboMode ? 2 : 1)); i++) {
+            Module._emuRunFrame(getVKState());
+        }
+        if (config.scaleMode >= 2) {
+            gpuDraw()
+        } else {
+            drawContext.putImageData(idata, 0, 0);
+        }
     }
 }
 
@@ -428,13 +506,24 @@ function adjustSize() {
     gbaWidth = 240 * scaleFator
     gbaHeight = 160 * scaleFator
     l += (window.innerWidth - gbaWidth) / 2;
-    canvas.style = 'width:' + gbaWidth + 'px;height:' + gbaHeight + 'px;left:' + l + 'px;'
+    var sty = 'width:' + gbaWidth + 'px;height:' + gbaHeight + 'px;left:' + l + 'px;'
+    if (config.scaleMode == 0) {
+        sty += 'image-rendering:pixelated;'
+    }
+    canvas.style = sty
+    var devicePixelRatio = window.devicePixelRatio || 1
+    if (config.scaleMode >= 2) {
+        canvas.width = gbaWidth * devicePixelRatio
+        canvas.height = gbaHeight * devicePixelRatio
+    } else {
+        canvas.width = 240
+        canvas.height = 160
+    }
     adjustVKLayout()
 }
 
 window.onresize = adjustSize
 window.onorientationchange = adjustSize
-adjustSize()
 
 
 function handleTouch(event) {
@@ -474,9 +563,7 @@ function handleTouch(event) {
     if (keyState['menu'][2]) {
         setPauseMenu(true)
     }
-    if (keyState['turbo'][2] != keyState['turbo'][1]) {
-        setTurboMode(keyState['turbo'][2])
-    }
+    fastForwardMode = keyState['turbo'][2]
     for (var k in keyState) {
         if (keyState[k][1] != keyState[k][2]) {
             var dom = keyState[k][0]
@@ -508,13 +595,16 @@ var gamePadKeyMap = {
     'right': 15
 }
 
-window.addEventListener("gamepadconnected", function (e) {
-    console.log("Gamepad connected at index %d: %s. %d buttons, %d axes.",
-        e.gamepad.index, e.gamepad.id,
-        e.gamepad.buttons.length, e.gamepad.axes.length);
-    showMsg('Gamepad connected.')
-    currentConnectedGamepad = e.gamepad.index
-});
+if (isSaveSupported) {
+    window.addEventListener("gamepadconnected", function (e) {
+        console.log("Gamepad connected at index %d: %s. %d buttons, %d axes.",
+            e.gamepad.index, e.gamepad.id,
+            e.gamepad.buttons.length, e.gamepad.axes.length);
+        showMsg('Gamepad connected.')
+        currentConnectedGamepad = e.gamepad.index
+    });
+}
+
 
 function processGamepadInput() {
     if (currentConnectedGamepad < 0) {
@@ -552,7 +642,7 @@ function processGamepadInput() {
 /*
         // dunno why, but we should do that first on iOS
         window.ontouchstart = function() {
- 
+
         };
         window.ontouchstart = handleTouch;
         window.ontouchmove = handleTouch;
@@ -578,13 +668,11 @@ function getVKState() {
     return ret;
 }
 
-function convertKeyCode(keyCode) {
-    // const keyList = ["a", "b", "select", "start", "right", "left", 'up', 'down', 'r', 'l'];
-    const keymap = [88, 90, 16, 13, 39, 37, 38, 40, 87, 81] // z x shift enter right left up down w q
-    //8bitdo Zero2 in Keyboard Mode
-    //const keymap2 = [71, 74, 78, 79, 70, 69, 67, 68, 77, 75]
+function convertKeyboardEventCode(code) {
+    // const keyList = ['a', 'b', 'select', 'start', 'right', 'left', 'up', 'down', 'r', 'l'];
+    const keymap = ["KeyX", "KeyZ", "ShiftRight", "Enter", "ArrowRight", "ArrowLeft", "ArrowUp", "ArrowDown", "KeyW", "KeyQ"]
     for (var i = 0; i < 10; i++) {
-        if (keyCode == keymap[i]) {
+        if (code == keymap[i]) {
             return i
         }
     }
@@ -592,30 +680,34 @@ function convertKeyCode(keyCode) {
 }
 
 document.onkeydown = function (e) {
+    // console.log(`${e.code} pressed`)
     tryInitSound()
-    console.log(e.keyCode)
-    if (!isRunning) {
-        return
-    }
     e.preventDefault()
 
-    var k = convertKeyCode(e.keyCode)
+    if (e.code == "ShiftLeft" || e.code == "Tab") {
+        fastForwardMode = true
+    }
+
+    var k = convertKeyboardEventCode(e.code)
     if (k >= 0) {
         keyState[keyList[k]][1] = 1
     }
 }
 
 document.onkeyup = function (e) {
-    if (!isRunning) {
-        return
+    // console.log(`${e.code} released`)
+    if (e.code == "Escape") {
+        setPauseMenu(document.getElementById('pause-menu').hidden)
     }
     e.preventDefault()
-    var k = convertKeyCode(e.keyCode)
+
+    if (e.code == "ShiftLeft" || e.code == "Tab") {
+        fastForwardMode = false
+    }
+
+    var k = convertKeyboardEventCode(e.code)
     if (k >= 0) {
         keyState[keyList[k]][1] = 0
-    }
-    if (e.keyCode == 27) {
-        setPauseMenu(true)
     }
 }
 
@@ -648,36 +740,69 @@ function showMsg(msg) {
     }, 1000)
 }
 
-function setTurboMode(t) {
-    t = t ? true : false
-    if (turboMode == t) {
-        return
-    }
-    if (t) {
-        turboInterval = setInterval(emuRunFrame, 2)
-    } else {
-        clearInterval(turboInterval)
-    }
-    turboMode = t
-}
 
 function setPauseMenu(t) {
-    if (!t) {
-        // Save cheat code
-        var cheatCode = filterCheatCode($id('txt-code').value)
-        if ((localStorage['cht-' + gameID] || '') != cheatCode) {
-            localStorage['cht-' + gameID] = cheatCode
-            showMsg('Cheat code saved. Restart the app to apply.')
-        }
-    }
     t = t ? true : false
     isRunning = !t
     document.getElementById('pause-menu').hidden = !t
+    if (!t) {
+        uiSaveConfig()
+    }
+}
+
+function chtSaveBtn() {
+    var inputText = $id('txt-code').value.trim()
+    // Save cheat code
+    var cheatCode = filterCheatCode(inputText)
+    localStorage['cht-' + gameID] = cheatCode
+    $id('txt-code').value = cheatCode
+    alert('Cheat code saved.\nRestart the app to apply.')
 }
 
 localforage.ready().then(function () { }).catch(function (err) {
     alert('Save storage not supported: ' + err);
 })
+
+
+function applyCheatCode() {
+    var ptrGBuf = Module._emuGetSymbol(4)
+    var gbuf = Module.HEAPU8.subarray(ptrGBuf, ptrGBuf + 0x1000)
+    var lines = cheatCode.split('\n')
+    var textEnc = new TextEncoder()
+    for (var i = 0; i < lines.length; i++) {
+        var line = lines[i].trim()
+        if (line.length == 0) {
+            continue
+        }
+        if (line.length == 12) {
+            line = line.substr(0, 8) + ' ' + line.substr(8, 4)
+        }
+        var lineBuf = textEnc.encode(line)
+        console.log(lineBuf.length)
+        gbuf.set(lineBuf)
+        gbuf[lineBuf.length] = 0
+        console.log(Module._emuAddCheat(ptrGBuf))
+    }
+}
+
+$id('txt-code').placeholder = 'Cheat code:\nGamesharkAdv: XXXXXXXX YYYYYYYY\nCodeBreaker: XXXXXXXX YYYY'
+
+function filterCheatCode(code) {
+    var lines = code.toUpperCase().split('\n')
+    var ret = ''
+    for (var i = 0; i < lines.length; i++) {
+        var line = lines[i].trim().replace(/ /g, '')
+        if ((line.length != 16) && (line.length != 12)) {
+            continue
+        }
+        // Check if it's a hex string
+        if (line.match(/[^0-9A-F]/)) {
+            continue
+        }
+        ret += line + '\n'
+    }
+    return ret.trim()
+}
 
 function chtWriteBtn() {
     var addr = parseInt(document.getElementById('cht-addr').value)
@@ -703,22 +828,721 @@ window.addEventListener("gamepadconnected", function (e) {
     console.log("Gamepad connected")
 });
 
-
-$id('txt-code').placeholder = 'Cheat code:\nGameshark: XXXXXXXXYYYYYYYY\nAction Replay: XXXXXXXX YYYY'
-
-function filterCheatCode(code) {
-    var lines = code.split('\n')
-    var ret = ''
-    for (var i = 0; i < lines.length; i++) {
-        var line = lines[i].trim().replace(/ /g, '')
-        if ((line.length != 16) && (line.length != 12)) {
-            continue
-        }
-        // Check if it's a hex string
-        if (line.match(/[^0-9A-F]/)) {
-            continue
-        }
-        ret += line + '\n'
-    }
-    return ret
+$id('cfg-turbo').onchange = function () {
+    turboMode = !!this.checked
 }
+
+$id('cfg-mute').onchange = function () {
+    muteMode = !!this.checked
+}
+
+var lang = navigator.language || 'unknown';
+
+if ((lang == 'ja')) {
+    // Hide cheat ui
+    $id('div-cht').hidden = true
+}
+
+if (isSaveSupported) {
+    // Register Service Worker
+    if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.register('sw.js').then(function (reg) {
+            // registration worked
+            console.log('Registration succeeded. Scope is ' + reg.scope);
+        }).catch(function (error) {
+            // registration failed
+            console.log('Registration failed with ' + error);
+        });
+        navigator.serviceWorker.addEventListener('message', event => {
+            console.log('sw msg', event);
+            if (event.data.msg) {
+                $id('title').innerText = event.data.msg
+            }
+        });
+    }
+}
+(function () {
+
+    var cnt = 0;
+    // Prompt to install PWA
+    window.onbeforeinstallprompt = function (e) {
+        cnt += 1;
+        if (cnt > 2) {
+            return;
+        }
+        console.log('Before install prompt', e);
+        e.preventDefault();
+        var deferredPrompt = e;
+        window.onclick = function (e) {
+            deferredPrompt.prompt();
+            window.onclick = null;
+        }
+    };
+})();
+
+
+/** @type {WebGLRenderingContext} */
+
+var vertShaderSource = `
+    precision mediump float;
+    attribute vec2 a_position; //(0,0)-(1,1)
+    varying vec2 v_texCoord; //(0,0)-(1,1)
+
+    void main() {
+        // Convert a_position to gl_Position
+        gl_Position = vec4(a_position.x * 2.0 - 1.0, 1.0 - a_position.y * 2.0, 0, 1);
+        v_texCoord = a_position;
+    }
+`;
+var fragShaderSource = `
+
+
+
+#ifdef GL_ES
+#ifdef GL_FRAGMENT_PRECISION_HIGH
+precision highp float;
+#else
+precision mediump float;
+#endif
+#define COMPAT_PRECISION mediump
+#else
+#define COMPAT_PRECISION
+#endif
+
+#if __VERSION__ >= 130
+#define COMPAT_VARYING in
+#define COMPAT_TEXTURE texture
+out COMPAT_PRECISION vec4 FragColor;
+#else
+#define COMPAT_VARYING varying
+#define FragColor gl_FragColor
+#define COMPAT_TEXTURE texture2D
+#endif
+
+precision mediump float;
+uniform sampler2D u_image;
+varying vec2 v_texCoord;
+uniform vec2 u_outResolution;
+uniform vec2 u_inResolution;
+
+#define Source u_image
+#define vTexCoord v_texCoord
+
+#define SourceSize vec4(u_inResolution, 1.0 / u_inResolution)
+#define OutSize vec4(u_outResolution, 1.0 / u_outResolution)
+
+#define BLEND_NONE 0
+#define BLEND_NORMAL 1
+#define BLEND_DOMINANT 2
+#define LUMINANCE_WEIGHT 1.0
+#define EQUAL_COLOR_TOLERANCE 30.0/255.0
+#define STEEP_DIRECTION_THRESHOLD 2.2
+#define DOMINANT_DIRECTION_THRESHOLD 3.6
+
+float DistYCbCr(vec3 pixA, vec3 pixB)
+{
+  const vec3 w = vec3(0.2627, 0.6780, 0.0593);
+  const float scaleB = 0.5 / (1.0 - w.b);
+  const float scaleR = 0.5 / (1.0 - w.r);
+  vec3 diff = pixA - pixB;
+  float Y = dot(diff.rgb, w);
+  float Cb = scaleB * (diff.b - Y);
+  float Cr = scaleR * (diff.r - Y);
+
+  return sqrt(((LUMINANCE_WEIGHT * Y) * (LUMINANCE_WEIGHT * Y)) + (Cb * Cb) + (Cr * Cr));
+}
+
+bool IsPixEqual(const vec3 pixA, const vec3 pixB)
+{
+  return (DistYCbCr(pixA, pixB) < EQUAL_COLOR_TOLERANCE);
+}
+
+float get_left_ratio(vec2 center, vec2 origin, vec2 direction, vec2 scale)
+{
+  vec2 P0 = center - origin;
+  vec2 proj = direction * (dot(P0, direction) / dot(direction, direction));
+  vec2 distv = P0 - proj;
+  vec2 orth = vec2(-direction.y, direction.x);
+  float side = sign(dot(P0, orth));
+  float v = side * length(distv * scale);
+
+//  return step(0, v);
+  return smoothstep(-sqrt(2.0)/2.0, sqrt(2.0)/2.0, v);
+}
+
+#define eq(a,b)  (a == b)
+#define neq(a,b) (a != b)
+
+#define P(x,y) COMPAT_TEXTURE(Source, coord + SourceSize.zw * vec2(x, y)).rgb
+
+void main()
+{
+  //---------------------------------------
+  // Input Pixel Mapping:  -|x|x|x|-
+  //                       x|A|B|C|x
+  //                       x|D|E|F|x
+  //                       x|G|H|I|x
+  //                       -|x|x|x|-
+
+  vec2 scale = OutSize.xy * SourceSize.zw;
+  vec2 pos = fract(vTexCoord * SourceSize.xy) - vec2(0.5, 0.5);
+  vec2 coord = vTexCoord - pos * SourceSize.zw;
+
+  vec3 A = P(-1.,-1.);
+  vec3 B = P( 0.,-1.);
+  vec3 C = P( 1.,-1.);
+  vec3 D = P(-1., 0.);
+  vec3 E = P( 0., 0.);
+  vec3 F = P( 1., 0.);
+  vec3 G = P(-1., 1.);
+  vec3 H = P( 0., 1.);
+  vec3 I = P( 1., 1.);
+
+  // blendResult Mapping: x|y|
+  //                      w|z|
+  ivec4 blendResult = ivec4(BLEND_NONE,BLEND_NONE,BLEND_NONE,BLEND_NONE);
+
+  // Preprocess corners
+  // Pixel Tap Mapping: -|-|-|-|-
+  //                    -|-|B|C|-
+  //                    -|D|E|F|x
+  //                    -|G|H|I|x
+  //                    -|-|x|x|-
+  if (!((eq(E,F) && eq(H,I)) || (eq(E,H) && eq(F,I))))
+  {
+    float dist_H_F = DistYCbCr(G, E) + DistYCbCr(E, C) + DistYCbCr(P(0,2), I) + DistYCbCr(I, P(2.,0.)) + (4.0 * DistYCbCr(H, F));
+    float dist_E_I = DistYCbCr(D, H) + DistYCbCr(H, P(1,2)) + DistYCbCr(B, F) + DistYCbCr(F, P(2.,1.)) + (4.0 * DistYCbCr(E, I));
+    bool dominantGradient = (DOMINANT_DIRECTION_THRESHOLD * dist_H_F) < dist_E_I;
+    blendResult.z = ((dist_H_F < dist_E_I) && neq(E,F) && neq(E,H)) ? ((dominantGradient) ? BLEND_DOMINANT : BLEND_NORMAL) : BLEND_NONE;
+  }
+
+
+  // Pixel Tap Mapping: -|-|-|-|-
+  //                    -|A|B|-|-
+  //                    x|D|E|F|-
+  //                    x|G|H|I|-
+  //                    -|x|x|-|-
+  if (!((eq(D,E) && eq(G,H)) || (eq(D,G) && eq(E,H))))
+  {
+    float dist_G_E = DistYCbCr(P(-2.,1.)  , D) + DistYCbCr(D, B) + DistYCbCr(P(-1.,2.), H) + DistYCbCr(H, F) + (4.0 * DistYCbCr(G, E));
+    float dist_D_H = DistYCbCr(P(-2.,0.)  , G) + DistYCbCr(G, P(0.,2.)) + DistYCbCr(A, E) + DistYCbCr(E, I) + (4.0 * DistYCbCr(D, H));
+    bool dominantGradient = (DOMINANT_DIRECTION_THRESHOLD * dist_D_H) < dist_G_E;
+    blendResult.w = ((dist_G_E > dist_D_H) && neq(E,D) && neq(E,H)) ? ((dominantGradient) ? BLEND_DOMINANT : BLEND_NORMAL) : BLEND_NONE;
+  }
+
+  // Pixel Tap Mapping: -|-|x|x|-
+  //                    -|A|B|C|x
+  //                    -|D|E|F|x
+  //                    -|-|H|I|-
+  //                    -|-|-|-|-
+  if (!((eq(B,C) && eq(E,F)) || (eq(B,E) && eq(C,F))))
+  {
+    float dist_E_C = DistYCbCr(D, B) + DistYCbCr(B, P(1.,-2.)) + DistYCbCr(H, F) + DistYCbCr(F, P(2.,-1.)) + (4.0 * DistYCbCr(E, C));
+    float dist_B_F = DistYCbCr(A, E) + DistYCbCr(E, I) + DistYCbCr(P(0.,-2.), C) + DistYCbCr(C, P(2.,0.)) + (4.0 * DistYCbCr(B, F));
+    bool dominantGradient = (DOMINANT_DIRECTION_THRESHOLD * dist_B_F) < dist_E_C;
+    blendResult.y = ((dist_E_C > dist_B_F) && neq(E,B) && neq(E,F)) ? ((dominantGradient) ? BLEND_DOMINANT : BLEND_NORMAL) : BLEND_NONE;
+  }
+
+  // Pixel Tap Mapping: -|x|x|-|-
+  //                    x|A|B|C|-
+  //                    x|D|E|F|-
+  //                    -|G|H|-|-
+  //                    -|-|-|-|-
+  if (!((eq(A,B) && eq(D,E)) || (eq(A,D) && eq(B,E))))
+  {
+    float dist_D_B = DistYCbCr(P(-2.,0.), A) + DistYCbCr(A, P(0.,-2.)) + DistYCbCr(G, E) + DistYCbCr(E, C) + (4.0 * DistYCbCr(D, B));
+    float dist_A_E = DistYCbCr(P(-2.,-1.), D) + DistYCbCr(D, H) + DistYCbCr(P(-1.,-2.), B) + DistYCbCr(B, F) + (4.0 * DistYCbCr(A, E));
+    bool dominantGradient = (DOMINANT_DIRECTION_THRESHOLD * dist_D_B) < dist_A_E;
+    blendResult.x = ((dist_D_B < dist_A_E) && neq(E,D) && neq(E,B)) ? ((dominantGradient) ? BLEND_DOMINANT : BLEND_NORMAL) : BLEND_NONE;
+  }
+
+  vec3 res = E;
+
+  // Pixel Tap Mapping: -|-|-|-|-
+  //                    -|-|B|C|-
+  //                    -|D|E|F|x
+  //                    -|G|H|I|x
+  //                    -|-|x|x|-
+  if(blendResult.z != BLEND_NONE)
+  {
+    float dist_F_G = DistYCbCr(F, G);
+    float dist_H_C = DistYCbCr(H, C);
+    bool doLineBlend = (blendResult.z == BLEND_DOMINANT ||
+                !((blendResult.y != BLEND_NONE && !IsPixEqual(E, G)) || (blendResult.w != BLEND_NONE && !IsPixEqual(E, C)) ||
+                  (IsPixEqual(G, H) && IsPixEqual(H, I) && IsPixEqual(I, F) && IsPixEqual(F, C) && !IsPixEqual(E, I))));
+
+    vec2 origin = vec2(0.0, 1.0 / sqrt(2.0));
+    vec2 direction = vec2(1.0, -1.0);
+    if(doLineBlend)
+    {
+      bool haveShallowLine = (STEEP_DIRECTION_THRESHOLD * dist_F_G <= dist_H_C) && neq(E,G) && neq(D,G);
+      bool haveSteepLine = (STEEP_DIRECTION_THRESHOLD * dist_H_C <= dist_F_G) && neq(E,C) && neq(B,C);
+      origin = haveShallowLine? vec2(0.0, 0.25) : vec2(0.0, 0.5);
+      direction.x += haveShallowLine? 1.0: 0.0;
+      direction.y -= haveSteepLine? 1.0: 0.0;
+    }
+
+    vec3 blendPix = mix(H,F, step(DistYCbCr(E, F), DistYCbCr(E, H)));
+    res = mix(res, blendPix, get_left_ratio(pos, origin, direction, scale));
+  }
+
+  // Pixel Tap Mapping: -|-|-|-|-
+  //                    -|A|B|-|-
+  //                    x|D|E|F|-
+  //                    x|G|H|I|-
+  //                    -|x|x|-|-
+  if(blendResult.w != BLEND_NONE)
+  {
+    float dist_H_A = DistYCbCr(H, A);
+    float dist_D_I = DistYCbCr(D, I);
+    bool doLineBlend = (blendResult.w == BLEND_DOMINANT ||
+                !((blendResult.z != BLEND_NONE && !IsPixEqual(E, A)) || (blendResult.x != BLEND_NONE && !IsPixEqual(E, I)) ||
+                  (IsPixEqual(A, D) && IsPixEqual(D, G) && IsPixEqual(G, H) && IsPixEqual(H, I) && !IsPixEqual(E, G))));
+
+    vec2 origin = vec2(-1.0 / sqrt(2.0), 0.0);
+    vec2 direction = vec2(1.0, 1.0);
+    if(doLineBlend)
+    {
+      bool haveShallowLine = (STEEP_DIRECTION_THRESHOLD * dist_H_A <= dist_D_I) && neq(E,A) && neq(B,A);
+      bool haveSteepLine  = (STEEP_DIRECTION_THRESHOLD * dist_D_I <= dist_H_A) && neq(E,I) && neq(F,I);
+      origin = haveShallowLine? vec2(-0.25, 0.0) : vec2(-0.5, 0.0);
+      direction.y += haveShallowLine? 1.0: 0.0;
+      direction.x += haveSteepLine? 1.0: 0.0;
+    }
+    origin = origin;
+    direction = direction;
+
+    vec3 blendPix = mix(H,D, step(DistYCbCr(E, D), DistYCbCr(E, H)));
+    res = mix(res, blendPix, get_left_ratio(pos, origin, direction, scale));
+  }
+
+  // Pixel Tap Mapping: -|-|x|x|-
+  //                    -|A|B|C|x
+  //                    -|D|E|F|x
+  //                    -|-|H|I|-
+  //                    -|-|-|-|-
+  if(blendResult.y != BLEND_NONE)
+  {
+    float dist_B_I = DistYCbCr(B, I);
+    float dist_F_A = DistYCbCr(F, A);
+    bool doLineBlend = (blendResult.y == BLEND_DOMINANT ||
+                !((blendResult.x != BLEND_NONE && !IsPixEqual(E, I)) || (blendResult.z != BLEND_NONE && !IsPixEqual(E, A)) ||
+                  (IsPixEqual(I, F) && IsPixEqual(F, C) && IsPixEqual(C, B) && IsPixEqual(B, A) && !IsPixEqual(E, C))));
+
+    vec2 origin = vec2(1.0 / sqrt(2.0), 0.0);
+    vec2 direction = vec2(-1.0, -1.0);
+
+    if(doLineBlend)
+    {
+      bool haveShallowLine = (STEEP_DIRECTION_THRESHOLD * dist_B_I <= dist_F_A) && neq(E,I) && neq(H,I);
+      bool haveSteepLine  = (STEEP_DIRECTION_THRESHOLD * dist_F_A <= dist_B_I) && neq(E,A) && neq(D,A);
+      origin = haveShallowLine? vec2(0.25, 0.0) : vec2(0.5, 0.0);
+      direction.y -= haveShallowLine? 1.0: 0.0;
+      direction.x -= haveSteepLine? 1.0: 0.0;
+    }
+
+    vec3 blendPix = mix(F,B, step(DistYCbCr(E, B), DistYCbCr(E, F)));
+    res = mix(res, blendPix, get_left_ratio(pos, origin, direction, scale));
+  }
+
+  // Pixel Tap Mapping: -|x|x|-|-
+  //                    x|A|B|C|-
+  //                    x|D|E|F|-
+  //                    -|G|H|-|-
+  //                    -|-|-|-|-
+  if(blendResult.x != BLEND_NONE)
+  {
+    float dist_D_C = DistYCbCr(D, C);
+    float dist_B_G = DistYCbCr(B, G);
+    bool doLineBlend = (blendResult.x == BLEND_DOMINANT ||
+                !((blendResult.w != BLEND_NONE && !IsPixEqual(E, C)) || (blendResult.y != BLEND_NONE && !IsPixEqual(E, G)) ||
+                  (IsPixEqual(C, B) && IsPixEqual(B, A) && IsPixEqual(A, D) && IsPixEqual(D, G) && !IsPixEqual(E, A))));
+
+    vec2 origin = vec2(0.0, -1.0 / sqrt(2.0));
+    vec2 direction = vec2(-1.0, 1.0);
+    if(doLineBlend)
+    {
+      bool haveShallowLine = (STEEP_DIRECTION_THRESHOLD * dist_D_C <= dist_B_G) && neq(E,C) && neq(F,C);
+      bool haveSteepLine  = (STEEP_DIRECTION_THRESHOLD * dist_B_G <= dist_D_C) && neq(E,G) && neq(H,G);
+      origin = haveShallowLine? vec2(0.0, -0.25) : vec2(0.0, -0.5);
+      direction.x -= haveShallowLine? 1.0: 0.0;
+      direction.y += haveSteepLine? 1.0: 0.0;
+    }
+
+    vec3 blendPix = mix(D,B, step(DistYCbCr(E, B), DistYCbCr(E, D)));
+    res = mix(res, blendPix, get_left_ratio(pos, origin, direction, scale));
+  }
+
+ 	FragColor = vec4(res, 1.0);
+} `
+
+var gl = null;
+var program
+var outResolutionUniformLocation
+
+function gpuDraw() {
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, idata);
+    gl.viewport(0, 0, canvas.width, canvas.height);
+    gl.uniform2f(outResolutionUniformLocation, canvas.width, canvas.height);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+}
+
+function gpuInit() {
+    gl = canvas.getContext("webgl");
+    if (!gl) {
+        alert("Unable to initialize WebGL. Your browser or machine may not support it.");
+        return;
+    }
+    gl.viewport(0, 0, canvas.width, canvas.height);
+    // Create shader.
+    program = gl.createProgram();
+    var vertShader = gl.createShader(gl.VERTEX_SHADER);
+    var fragShader = gl.createShader(gl.FRAGMENT_SHADER);
+    gl.shaderSource(vertShader, vertShaderSource);
+    gl.shaderSource(fragShader, fragShaderSource);
+    gl.compileShader(vertShader);
+    gl.compileShader(fragShader);
+    // Check if compilation succeeded.
+    if (!gl.getShaderParameter(vertShader, gl.COMPILE_STATUS)) {
+        alert("Error in vertex shader: " + gl.getShaderInfoLog(vertShader));
+        return;
+    }
+    if (!gl.getShaderParameter(fragShader, gl.COMPILE_STATUS)) {
+        alert("Error in fragment shader: " + gl.getShaderInfoLog(fragShader));
+        return;
+    }
+    gl.attachShader(program, vertShader);
+    gl.attachShader(program, fragShader);
+    gl.linkProgram(program);
+    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+        alert("Error in program: " + gl.getProgramInfoLog(program));
+        return;
+    }
+    gl.useProgram(program);
+    // Create texture.
+    var texture = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    // Use nearest neighbor interpolation.
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    // Create vertex buffer, a rectangle to (0,0)-(width,height).
+    var vertices = new Float32Array([
+        0, 0,
+        1, 0,
+        0, 1,
+        0, 1,
+        1, 0,
+        1, 1
+    ]);
+    var vertexBuffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, vertexBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
+    // Create attribute.
+    var positionAttribLocation = gl.getAttribLocation(program, "a_position");
+    gl.enableVertexAttribArray(positionAttribLocation);
+    gl.vertexAttribPointer(positionAttribLocation, 2, gl.FLOAT, false, 0, 0);
+    // Set uniform.
+    outResolutionUniformLocation = gl.getUniformLocation(program, "u_outResolution");
+    var inResolutionUniformLocation = gl.getUniformLocation(program, "u_inResolution");
+    gl.uniform2f(inResolutionUniformLocation, 240, 160);
+}
+initVideo()
+
+
+
+
+var DP_BASE_PATH = "/vbasav"
+var DP_EXT = ".4gz"
+
+function dpGetCurrentDayInt() {
+    // yyyymmdd
+    var date = new Date();
+    var year = date.getFullYear();
+    var month = date.getMonth() + 1;
+    var day = date.getDate();
+    var retInt = year * 10000 + month * 100 + day;
+    return retInt;
+}
+
+
+
+function dpIsConnected() {
+    return localStorage['d-token'] ? true : false
+}
+
+async function dpIDHash(gameID) {
+    if (!localStorage['d-id']) {
+        throw "Not connected"
+    }
+    // Using SHA256
+    var inputData = localStorage['d-id'] + ',' + gameID
+    var hash = await window.crypto.subtle.digest('SHA-256', new TextEncoder("utf-8").encode(inputData))
+    var digestHex = Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, '0')).join('')
+    return digestHex.substring(0, 8)
+}
+
+
+async function dpGameLoaded() {
+    if (dpIsConnected()) {
+        var hash = await dpIDHash(gameID)
+        $id('span-cloud-id').innerText = hash
+    }
+}
+
+async function dpConnect() {
+    var redirectUri = encodeURIComponent("https://gba.44670.org")
+    var url = "https://www.dropbox.com/oauth2/authorize?client_id=zro5k6xlnsxu4gz&response_type=code&token_access_type=offline"
+    url += "&redirect_uri=" + redirectUri
+    location.href = url
+}
+
+
+async function dpCheckUser() {
+    var resp = await fetch('https://api.dropboxapi.com/2/check/user', {
+        method: 'POST',
+        headers: {
+            'Authorization': 'Bearer ' + localStorage['d-token'],
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ query: "foo" })
+    })
+    var obj = await resp.text()
+    console.log(obj)
+}
+
+async function dpUploadFile(path, u8Arr, mode) {
+    mode = mode || "overwrite"
+    var uploadArg = JSON.stringify({
+        "autorename": true,
+        "mode": mode,
+        "mute": true,
+        "strict_conflict": false,
+        "path": path,
+    })
+    var blob = new Blob([u8Arr], { type: "application/octet-stream" })
+    for (var retry = 0; retry < 2; retry++) {
+        var resp = await fetch('https://content.dropboxapi.com/2/files/upload', {
+            method: 'POST',
+            headers: {
+                'Authorization': 'Bearer ' + localStorage['d-token'],
+                'Dropbox-API-Arg': uploadArg,
+                'Content-Type': 'application/octet-stream'
+            },
+            body: blob
+        })
+        console.log("status: ", resp.status)
+        // Check http status.
+        if (resp.status != 200) {
+            if (resp.status == 401) {
+                var ret = await dpRefreshToken()
+                if (!ret) {
+                    throw "Unable to refresh token"
+                }
+                continue
+            }
+            else {
+                throw "Upload failed, unknown http status: " + resp.status
+            }
+        } else {
+            var obj = await resp.json()
+            console.log(obj)
+            return obj
+        }
+    }
+    return false
+}
+
+async function dpDownloadFile(path) {
+    var downloadArg = JSON.stringify({
+        "path": path,
+    })
+    for (var retry = 0; retry < 2; retry++) {
+        var resp = await fetch('https://content.dropboxapi.com/2/files/download', {
+            method: 'POST',
+            headers: {
+                "Authorization": "Bearer " + localStorage['d-token'],
+                "Dropbox-API-Arg": downloadArg,
+            }
+        })
+        console.log("status: ", resp.status)
+        if (resp.status != 200) {
+            if (resp.status == 401) {
+                var ret = await dpRefreshToken()
+                if (!ret) {
+                    throw "Unable to refresh token"
+                }
+                continue
+            }
+            else {
+                throw "Download failed, unknown http status: " + resp.status
+            }
+        }
+        // Get result from header
+        var obj = JSON.parse(resp.headers.get("dropbox-api-result"))
+        console.log(obj)
+        // Get result from body
+        var u8Arr = await resp.arrayBuffer()
+        return new Uint8Array(u8Arr)
+    }
+    return false
+}
+
+async function dpOnLoad() {
+    if (location.search.startsWith("?code=")) {
+        var code = location.search.slice(6)
+        var resp = await fetch("https://c.44670.org/d", {
+            method: "POST",
+            body: "1,https://gba.44670.org," + code,
+        })
+        var obj = await resp.json()
+        if (!obj.error) {
+            localStorage['d-token'] = obj.token
+            localStorage['d-token-r'] = obj.tokenr
+            localStorage['d-id'] = obj.id
+            alert("Dropbox connected.")
+            location.href = "https://gba.44670.org"
+        } else {
+            alert(obj.error)
+        }
+    }
+    document.getElementById('btn-dp-connect').innerText = (dpIsConnected() ? "Disconnect" : "Connect") + " Dropbox"
+}
+
+async function dpRefreshToken() {
+    console.log("Refreshing token...")
+    if (!localStorage['d-token-r']) {
+        throw "No refresh token"
+    }
+    var resp = await fetch("https://c.44670.org/d", {
+        method: "POST",
+        body: "2,https://gba.44670.org," + localStorage['d-token-r'],
+    })
+    var obj = await resp.json()
+    if (!obj.error) {
+        localStorage['d-token'] = obj.token
+        return true
+    } else {
+        alert("Failed to update DropBox token: " + obj.error)
+    }
+    return false
+}
+
+async function dpGetPath(gameID, tag) {
+    var hash = await dpIDHash(gameID)
+    var path = DP_BASE_PATH + "/" + hash + "/" + tag + DP_EXT
+    return path
+}
+
+async function dpTryUploadCloudSave(gameID, tag, u8Arr, mode) {
+    if (!dpIsConnected()) {
+        return false
+    }
+    var path = await dpGetPath(gameID, tag)
+
+    try {
+        var resp = await dpUploadFile(path, u8Arr, mode)
+        return resp
+    } catch (e) {
+        alert("Failed to upload cloud save: " + e)
+        return false
+    }
+    return false
+}
+
+
+
+
+async function dpTryAutoBackup() {
+    if (!dpIsConnected()) {
+        return false
+    }
+    var sav = await emuBackupCloudSav()
+    if (sav === false) {
+        return false
+    }
+    var nowDay = '' + dpGetCurrentDayInt()
+    if (localStorage['d-last-' + gameID] == nowDay) {
+        return false
+    }
+    var ret = await dpTryUploadCloudSave(gameID, "auto-" + dpGetCurrentDayInt(), sav , "add")
+    if (ret) {
+        localStorage['d-last-' + gameID] = nowDay
+        return true
+    }
+    return false
+}
+
+
+
+
+function dpOnConnectButtonClicked() {
+    if (dpIsConnected()) {
+        if (confirm("Are you sure to disconnect from Dropbox?")) {
+            localStorage['d-token'] = ""
+            localStorage['d-token-r'] = ""
+            localStorage['d-id'] = ""
+            alert("Dropbox disconnected.")
+            location.href = "https://gba.44670.org"
+        }
+    } else {
+        dpConnect()
+    }
+}
+
+async function dpManualBtn(isUpload) {
+
+    if (!dpIsConnected()) {
+        alert("Please connect to Dropbox first.")
+        return
+    }
+    if (!gameID)  {
+        alert("Please load a game first.")
+        return
+    }
+    var choice = window.confirm("Are you sure to " + (isUpload ? "↑ upload" : "↓ download") + " cloud save?")
+    if (!choice) {
+        return
+    }
+    try {
+        if (isUpload) {
+            var sav = await emuBackupCloudSav()
+            if (sav === false) {
+                alert("No save data to upload.")
+                return
+            }
+            var ret = await dpTryUploadCloudSave(gameID, "manual", sav , "overwrite")
+            if (ret) {
+                alert("Uploaded successfully.")
+            } else {
+                alert("Failed to upload.")
+            }
+        } else {
+            var path = await dpGetPath(gameID, "manual")
+            var u8Arr = await dpDownloadFile(path)
+            if (!u8Arr) {
+                alert("Failed to download.")
+                return
+            }
+            if (u8Arr.length < 1) {
+                alert("No cloud save found.")
+                return
+            }
+            if (await emuRestoreCloudSav(u8Arr)) {
+                alert("Downloaded successfully.")
+                setTimeout(function () {
+                    location.reload()
+                }, 1000)
+            } else {
+                alert("Failed to download.")
+            }
+        }
+    } catch (e) {
+        alert("Error:" + e)
+        return
+    }
+}
+
+dpOnLoad()
